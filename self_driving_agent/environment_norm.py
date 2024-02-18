@@ -2,7 +2,7 @@ import glob
 import os
 import sys
 import numpy as np
-import sklearn
+from sklearn.preprocessing import MinMaxScaler
 import time
 
 try:
@@ -86,6 +86,12 @@ class SimEnv(object):
                           n_actions=1, max_size=BUFFER_SIZE, 
                           layer1_size=LAYER1_SIZE, layer2_size=LAYER2_SIZE,
                           batch_size=BATCH_SIZE)
+        
+        # Initialize state vectors for normalization
+        self.state_data = []  # List to collect state data for normalization
+        self.scaler = MinMaxScaler(feature_range=(0, 1))  # Min-max scaler for normalization
+        self.scaler_fitted = False  # Flag to check if the scaler is fitted
+
     
     def _initiate_visuals(self):
         pygame.init()
@@ -367,13 +373,32 @@ class SimEnv(object):
 
                     next_state = state
 
+                    ###################
+                    # Normalization logic
+                    ###################
+                    if ep <= 100:
+                        # Collect state data for normalization
+                        self.state_data.append(state)
+                    else: 
+                        if not self.scaler_fitted:
+                            # Fit the scaler to the collected state data
+                            self.scaler.fit(self.state_data)
+                            self.scaler_fitted = True # to ensure the one-time fitting of the scaler
+
+                    # Check if the scaler is fitted, then normalize the state
+                    if self.scaler_fitted:
+                        state = self.normalize_state(state)
+
+
+
                     #CHECK THIS
                     #replay_buffer.add(state, action, next_state, reward, done)
                     self.agent.remember(state, action, reward, next_state, done)
 
                     if not eval:
                         # Train after a number of episodes > start_train and do not train with every timestep
-                        if ep > self.start_train and (self.global_t % self.train_freq) == 0:
+                        # if ep > self.start_train and (self.global_t % self.train_freq) == 0:
+                        if ep > 100 and (self.global_t % self.train_freq) == 0:
                             #model.train(replay_buffer)
                             self.agent.learn()
 
@@ -543,6 +568,14 @@ class SimEnv(object):
         yaw_acceleration = (current_yaw_rate - self.previous_yaw_rate) / self.delta_time
         self.previous_yaw_rate = current_yaw_rate  # Update for next iteration
         return yaw_acceleration
+    
+    #######################################################
+    # State Normalization
+    #######################################################
+    def normalize_state(self, state):
+        """Normalize the state using the fitted scaler."""
+        state = np.array(state).reshape(1, -1)
+        return self.scaler.transform(state)[0]
 
 ####################################################### End of SimEnv
 

@@ -28,7 +28,7 @@ class CarlaSyncMode(object):
         self.world = world
         self.sensors = sensors
         self.frame = None
-        self.delta_seconds = 1.0 / kwargs.get('fps', 20)
+        self.delta_seconds = 1.0 / kwargs.get('fps', 20) # in self.clock.tick_busy_loop(30) it is suggested that fps=30
         self._queues = []
         self._settings = None
         self.collisions = []
@@ -59,10 +59,13 @@ class CarlaSyncMode(object):
             
             assert all(x.frame == self.frame for x in data)
 
+            #return data + [collision]
             return data + [collision]
+        
         except queue.Empty:
             print("empty queue")
-            return None, None, None
+            #return None, None, None
+            return None, None
 
     def __exit__(self, *args, **kwargs):
         self.world.apply_settings(self._settings)

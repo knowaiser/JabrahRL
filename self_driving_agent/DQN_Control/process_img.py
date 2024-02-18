@@ -1,5 +1,9 @@
 import cv2
 
+# In summary, this code reads an image, resizes it to a smaller size (128x128 pixels), 
+# converts it to grayscale, displays it for 5 seconds, and then closes the display window.
+
+
 img = cv2.imread('../output/000970.png')
 print(img.shape)
 
