@@ -30,7 +30,8 @@ class SimEnv(object):
         train_freq = 1,
         save_freq = 200,
         start_ep = 0,
-        max_dist_from_waypoint = 20
+        # max_dist_from_waypoint = 20
+        max_dist_from_waypoint = 5
     ) -> None:
         self.visuals = visuals
         if self.visuals:
@@ -52,6 +53,7 @@ class SimEnv(object):
 
         self.blueprint_library = self.world.get_blueprint_library()
         self.vehicle_blueprint = self.blueprint_library.find('vehicle.nissan.patrol')
+        #self.vehicle_blueprint = self.blueprint_library.find('vehicle.tesla.model3')
 
         # input these later on as arguments
         self.global_t = 0 # global timestep
@@ -107,18 +109,21 @@ class SimEnv(object):
         # self.steer_controller = PIDLateralController(self.vehicle)
 
         args_lateral = {
-            'K_P': 1.0,  # Proportional term. Adjust based on how aggressively you want to correct lateral errors
-            'K_D': 0.0,  # Differential term. Use this to counteract overshooting from the P term
-            'K_I': 0.0   # Integral term. Useful for eliminating steady-state error
+            'K_P': 0.5,  # Proportional term. Adjust based on how aggressively you want to correct lateral errors
+            'K_D': 0.2,  # Differential term. Use this to counteract overshooting from the P term
+            'K_I': 0.07   # Integral term. Useful for eliminating steady-state error
         }
 
         args_longitudinal = {
-            'K_P': 1.0,  # Proportional term. Adjust for the vehicle's response to speed and distance errors
+            'K_P': 0.5,  # Proportional term. Adjust for the vehicle's response to speed and distance errors
             'K_D': 0.0,  # Differential term. Helps to smooth the response and reduce oscillation
-            'K_I': 0.0   # Integral term. Compensates for biases and sustained errors in speed/distance
+            'K_I': 0.75   # Integral term. Compensates for biases and sustained errors in speed/distance
         }
 
         self.controller = VehiclePIDController(self.vehicle, args_lateral, args_longitudinal)
+        # print("args_lateral =", self.controller._lat_controller._k_i)
+        # print("args_longitudinal =", self.controller._lon_controller._k_i)
+
     
     def reset(self):
         for actor in self.actor_list:
@@ -144,6 +149,7 @@ class SimEnv(object):
             self.route_waypoints = []
             self.current_waypoint_index = 0
             self.total_distance = 780 # depending on the town
+            #self.total_distance = 5000 # depending on the town
 
             # Get the initial waypoint based on the vehicle's current location
             current_waypoint = self.world.get_map().get_waypoint(self.vehicle.get_location(), 
@@ -152,9 +158,9 @@ class SimEnv(object):
 
             for x in range(self.total_distance):
                 if x < 650:
-                    next_waypoint = current_waypoint.next(5.0)[0]
+                    next_waypoint = current_waypoint.next(0.5)[0]
                 else:
-                    next_waypoint = current_waypoint.next(5.0)[-1]
+                    next_waypoint = current_waypoint.next(0.5)[-1]
 
                 self.route_waypoints.append(next_waypoint)
                 current_waypoint = next_waypoint
@@ -162,6 +168,12 @@ class SimEnv(object):
             image = process_img(image_rgb)
             next_state = image 
 
+            # TO DRAW WAYPOINTS
+            for w in self.route_waypoints:
+                self.world.debug.draw_string(w.transform.location, 'O', draw_shadow=False,
+                                       color=carla.Color(r=0, g=0, b=255), life_time=120.0,
+                                       persistent_lines=True)
+    
             while True:
                 if self.visuals:
                     if should_quit():
@@ -233,11 +245,17 @@ class SimEnv(object):
                 # if action_map is not None:
                 #     steer = action_map[action]
 
+                vehicle_loc = self.vehicle.get_location()
+                target = self.current_waypoint
+                distance_v = self.find_dist_veh(vehicle_loc,target)
+
                 # control_speed = self.speed_controller.run_step(self.target_speed)
                 # control_steer = self.steer_controller.run_step(waypoint)
                 control = self.controller.run_step(self.target_speed, self.current_waypoint) # control is carla.VehicleControl
 
+                print("The control command that will be applied now =", control)
                 self.vehicle.apply_control(control)
+                 
 
                 fps = round(1.0 / snapshot.timestamp.delta_seconds)
 
@@ -322,6 +340,13 @@ class SimEnv(object):
         if np.isclose(denom, 0):
             return np.linalg.norm(p - A)
         return num / denom
+    
+    
+    def find_dist_veh(self, vehicle_loc,target):
+        dist = math.sqrt( (target.transform.location.x - vehicle_loc.x)**2 + 
+                         (target.transform.location.y - vehicle_loc.y)**2 )
+    
+        return dist
 ####################################################### End of SimEnv 
     
 def get_reward_comp(vehicle, waypoint, collision):
