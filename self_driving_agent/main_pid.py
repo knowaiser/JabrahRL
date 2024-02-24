@@ -22,7 +22,7 @@ def run():
         #model.load('weights/model_ep_4400')
 
         # set to True if you want to run with pygame
-        env = SimEnv(visuals=False, **env_params)
+        env = SimEnv(visuals=True, **env_params)
 
         for ep in range(episodes):
             env.create_actors()
