@@ -25,9 +25,9 @@ SSC_CAMERA = 'sensor.camera.semantic_segmentation'
 
 # Reward-related constants
 # Change these later based on empirical experimentation
-MAX_DEVIATION_ANGLE = 30.0
-MAX_DEVIATION_DISTANCE = 3.0 
-MAX_VELOCITY_THRESHOLD = 20.0
+MAX_DEVIATION_ANGLE = 0.2
+MAX_DEVIATION_DISTANCE = 0.5
+MAX_VELOCITY_THRESHOLD = 30.0
 REWARD_CONSTANT_C = 1.0
 
 # Constants from the paper or your specific application

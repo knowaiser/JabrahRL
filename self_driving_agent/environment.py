@@ -49,8 +49,8 @@ class SimEnv(object):
         self.spawn_points = self.world.get_map().get_spawn_points()
 
         self.blueprint_library = self.world.get_blueprint_library()
-        self.vehicle_blueprint = self.blueprint_library.find('vehicle.nissan.patrol')
-        #self.vehicle_blueprint = self.blueprint_library.find('vehicle.tesla.model3')
+        #self.vehicle_blueprint = self.blueprint_library.find('vehicle.nissan.patrol')
+        self.vehicle_blueprint = self.blueprint_library.find('vehicle.tesla.model3')
 
         # input these later on as arguments
         self.global_t = 0 # global timestep

@@ -8,9 +8,14 @@ import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 
+import logging
+from torch.utils.tensorboard import SummaryWriter  # For TensorBoard integration
+
+
 import random
 from collections import namedtuple, deque
 from DDPG_parameters import *
+from config import config
 
 class OUActionNoise(object): 
     # to produce a temporarily correlated noise centered around a mean
@@ -99,7 +104,10 @@ class CriticNetwork(nn.Module):
         self.fc1_dims = fc1_dims
         self.fc2_dims = fc2_dims
         self.n_actions = n_actions
-        self.checkpoint_file = os.path.join(chkpt_dir, name+'_ddpg')
+        # self.checkpoint_file = os.path.join(chkpt_dir, name+'_ddpg')
+        chkpt_dir = config['checkpoint_dir']
+        checkpoint_filename = config[name + '_checkpoint']  # name could be 'actor' or 'target_actor'
+        self.checkpoint_file = os.path.join(chkpt_dir, checkpoint_filename)
 
         # The neural network
         #self.fc1 = nn.Linear(*self.input_dims, self.fc1_dims)
@@ -124,8 +132,8 @@ class CriticNetwork(nn.Module):
         T.nn.init.uniform_(self.q.bias.data, -f3, f3) # initialize the biases
 
         self.optimizer = optim.Adam(self.parameters(), lr = beta) # Note: self.parameters is inherited from nn.Module
-        # self.device = T.device('cuda:0' if T.cuda.is_available() else 'cpu')
-        self.device = T.device('cpu')
+        self.device = T.device('cuda:0' if T.cuda.is_available() else 'cpu')
+        #self.device = T.device('cpu')
 
         self.to(self.device)
 
@@ -148,12 +156,27 @@ class CriticNetwork(nn.Module):
         return state_action_value
     
     def save_checkpoint(self):
-        print(' ... Saving Checkpoint ... ')
+        # Extract the directory path from the full checkpoint path
+        checkpoint_dir = os.path.dirname(self.checkpoint_file)
+
+        # Check if the directory exists, create it if it doesn't
+        if not os.path.exists(checkpoint_dir):
+            os.makedirs(checkpoint_dir, exist_ok=True)
+
+        print('Saving checkpoint to:', self.checkpoint_file)
         T.save(self.state_dict(), self.checkpoint_file)
 
-    def load_checkpoint(self):
-        print(' ... Loading Checkpoint ... ')
-        self.load_state_dict(T.load(self.checkpoint_file))
+        # print(' ... Saving Checkpoint ... ')
+        # T.save(self.state_dict(), self.critic_checkpoint_file)
+
+    def load_checkpoint(self, checkpoint_file=None):
+        if checkpoint_file is None:
+            checkpoint_file = self.checkpoint_file  # Fallback to the default if not provided
+        print('Loading checkpoint from:', checkpoint_file)
+        self.load_state_dict(T.load(checkpoint_file))
+
+        # print(' ... Loading Checkpoint ... ')
+        # self.load_state_dict(T.load(self.critic_checkpoint_file))
 
 class ActorNetwork(nn.Module):
     def __init__(self, alpha, input_dims, fc1_dims, fc2_dims, n_actions, name, chkpt_dir='tmp/ddpg'):
@@ -170,8 +193,11 @@ class ActorNetwork(nn.Module):
         self.n_actions = n_actions
         self.fc1_dims = fc1_dims
         self.fc2_dims = fc2_dims
-        self.checkpoint_file = os.path.join(chkpt_dir, name+'_ddpg')
         # self.action_bound = action_bound
+        # self.checkpoint_file = os.path.join(chkpt_dir, name+'_ddpg')
+        chkpt_dir = config['checkpoint_dir']
+        checkpoint_filename = config[name + '_checkpoint']  # name could be 'actor' or 'target_actor'
+        self.checkpoint_file = os.path.join(chkpt_dir, checkpoint_filename)
 
         # First layer
         #self.fc1 = nn.Linear(*self.input_dims, self.fc1_dims)
@@ -197,8 +223,8 @@ class ActorNetwork(nn.Module):
 
         self.optimizer = optim.Adam(self.parameters(), lr=alpha)
 
-        # self.device = T.device('cuda:0' if T.cuda.is_available() else 'cpu')
-        self.device = T.device('cpu')
+        self.device = T.device('cuda:0' if T.cuda.is_available() else 'cpu')
+        #self.device = T.device('cpu')
         self.to(self.device)
 
     def forward(self, state):
@@ -212,13 +238,38 @@ class ActorNetwork(nn.Module):
 
         return x
     
+    # def save_checkpoint(self, checkpoint_file=None):
+        # if checkpoint_file is None:
+        #     checkpoint_file = self.checkpoint_file  # Fallback to the default if not provided
+        # print('Saving checkpoint to:', checkpoint_file)
+        # T.save(self.state_dict(), checkpoint_file)
+
+        # # print(' ... Saving Checkpoint ... ')
+        # # T.save(self.state_dict(), self.actor_checkpoint_file)
+        # Extract the directory path from the full checkpoint path
+        # checkpoint_dir = os.path.dirname(self.checkpoint_file)
+
     def save_checkpoint(self):
-        print(' ... Saving Checkpoint ... ')
+         # Extract the directory path from the full checkpoint path
+        checkpoint_dir = os.path.dirname(self.checkpoint_file)
+        # Check if the directory exists, create it if it doesn't
+        if not os.path.exists(checkpoint_dir):
+            os.makedirs(checkpoint_dir, exist_ok=True)
+
+        print('Saving checkpoint to:', self.checkpoint_file)
         T.save(self.state_dict(), self.checkpoint_file)
 
-    def load_checkpoint(self):
-        print(' ... Loading Checkpoint ... ')
-        self.load_state_dict(T.load(self.checkpoint_file))
+        # print(' ... Saving Checkpoint ... ')
+        # T.save(self.state_dict(), self.critic_checkpoint_file)
+
+    def load_checkpoint(self, checkpoint_file=None):
+        if checkpoint_file is None:
+            checkpoint_file = self.checkpoint_file  # Fallback to the default if not provided
+        print('Loading checkpoint from:', checkpoint_file)
+        self.load_state_dict(T.load(checkpoint_file))
+    
+        # print(' ... Loading Checkpoint ... ')
+        # self.load_state_dict(T.load(self.actor_checkpoint_file))
 
 class DDPGAgent(object):
     # def __init__(self, alpha, beta, input_dims, tau, env, gamma=0.99, 
@@ -241,20 +292,26 @@ class DDPGAgent(object):
         self.batch_size = batch_size
 
         self.actor = ActorNetwork(alpha, input_dims, layer1_size, layer2_size,
-                                  n_actions=n_actions, name='Actor')
+                                  n_actions=n_actions, name='actor')
         
         self.target_actor = ActorNetwork(alpha, input_dims, layer1_size, layer2_size,
-                                  n_actions=n_actions, name='TargetActor')
+                                  n_actions=n_actions, name='target_actor')
         
         self.critic = CriticNetwork(beta, input_dims, layer1_size, layer2_size,
-                                    n_actions=n_actions, name='Critic')
+                                    n_actions=n_actions, name='critic')
         
         self.target_critic = CriticNetwork(beta, input_dims, layer1_size, layer2_size,
-                                    n_actions=n_actions, name='TargetCritic')
+                                    n_actions=n_actions, name='target_critic')
         
         self.noise = OUActionNoise(mu=np.zeros(n_actions))
 
         self.update_network_parameters(tau=1) # this solves the problem of the moving target
+
+        # Initialize logging and TensorBoard writer
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+        self.logger = logging.getLogger(__name__)
+        self.writer = SummaryWriter(log_dir='./logs/ddpg')  # Adjust log_dir as needed
+
 
     def choose_action(self, observation):
         # self.actor.eval() # this programming step is very critical (if you use bn) for the agent to learn
@@ -267,11 +324,11 @@ class DDPGAgent(object):
         # we apply the below operations/functions on the return value
         # return mu_prime.cpu().detach().numpy()
 
-        print("Original observation shape:", observation.shape)
+        # print("Original observation shape:", observation.shape)
 
         # Convert observation to a tensor and ensure it is on the correct device
         observation_tensor = T.tensor(observation, dtype=T.float).to(self.actor.device)
-        print("Tensor observation shape after conversion:", observation_tensor.shape)
+        # print("Tensor observation shape after conversion:", observation_tensor.shape)
 
         # Generate the action using the actor network
         self.actor.eval()  # Set the network to evaluation mode
@@ -345,6 +402,13 @@ class DDPGAgent(object):
         actor_loss = T.mean(actor_loss) # derived from the paper
         actor_loss.backward()
         self.actor.optimizer.step()
+
+        # Logging losses
+        self.logger.info(f"Critic Loss: {critic_loss.item()}, Actor Loss: {actor_loss.item()}")
+        print('Loss/Critic', critic_loss.item(), self.memory.mem_cntr)
+        print('Loss/Actor', actor_loss.item(), self.memory.mem_cntr)
+        self.writer.add_scalar('Loss/Critic', critic_loss.item(), self.memory.mem_cntr)
+        self.writer.add_scalar('Loss/Actor', actor_loss.item(), self.memory.mem_cntr)
 
         # now, we are done learning
         # you can now update your parameters for target_actor and target_critic

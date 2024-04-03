@@ -5,6 +5,7 @@ import csv
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 import time
+import matplotlib.pyplot as plt
 
 import logging
 from torch.utils.tensorboard import SummaryWriter
@@ -33,8 +34,8 @@ from config import config
 random.seed(78)
 
 class SimEnv(object):
-    def __init__(self, visuals=True, target_speed = 30, max_iter = 4000, start_buffer = 10, train_freq = 1,
-        save_freq = 200, start_ep = 0, max_dist_from_waypoint = 20) -> None:
+    def __init__(self, visuals=True, target_speed = 18, max_iter = 4000, start_buffer = 10, train_freq = 1,
+        action_freq = 4, save_freq = 200, start_ep = 0, max_dist_from_waypoint = 20) -> None:
         
 
         self.visuals = visuals
@@ -53,7 +54,10 @@ class SimEnv(object):
         self.world.unload_map_layer(carla.MapLayer.StreetLights)
         
 
-        self.spawn_points = self.world.get_map().get_spawn_points()
+        # self.spawn_points = self.world.get_map().get_spawn_points()
+        # self.spawn_waypoints = self.world.get_map().generate_waypoints(5.0)
+        # self.spawn_points = [waypoint.transform for waypoint in self.spawn_waypoints]
+        self.spawn_points = self.generate_custom_spawn_points(distance = 5.0)
 
         self.blueprint_library = self.world.get_blueprint_library()
         self.vehicle_blueprint = self.blueprint_library.find('vehicle.nissan.patrol')
@@ -165,17 +169,69 @@ class SimEnv(object):
         self.euclidean_dist_list = []
         self.dev_angle_array = []
         self.engine_rpm = float(0.0)
+        self.closest_waypoint_index = None
+        self.route_waypoints = []
+        
     
     def reset(self):
         for actor in self.actor_list:
-            actor.destroy()
+            if actor.is_alive: # this line is newly added
+                actor.destroy()
+           
+    def end_episode(self):
+        # If you have any actors (vehicles, sensors, etc.) that need to be destroyed
+        for actor in self.actor_list:
+            if actor.is_alive:
+                actor.destroy()
+        self.actor_list.clear()  # Clear the list of actors for the next episode
+
+        # Reset environment-specific variables
+        self.route_waypoints = []  # Assuming this is where waypoints are stored
+        self.current_waypoint_index = 0  # Reset index or similar variables
+        # self.total_reward = 0  # If you're tracking rewards
+
+        # Reset any other state or variables related to the episode
+        # For example, if you're tracking episode length or time
+        self.episode_length = 0
+
+        # Add any additional cleanup or state resetting you require here
+        # This is also where you might reset the simulation environment if needed
+        if self.world is not None:
+            self.reset()  # Assuming your simulation environment has a reset method
+
+        # Log the episode's end if necessary
+        print(f"Episode ended. Preparing for a new episode...")
+
    
     def generate_episode(self, ep, eval=True):
         with CarlaSyncMode(self.world, self.camera_rgb, self.camera_rgb_vis, self.collision_sensor, fps=30) as sync_mode:
             counter = 0
+            episode_reward = 0
 
-            #snapshot, image_rgb, image_rgb_vis, collision = sync_mode.tick(timeout=2.0)
-            # snapshot, collision = sync_mode.tick(timeout=2.0) # Snapshot is a carla.WorldSnapshot
+            # Generate route UPDATED 
+            self.generate_route_2()
+
+
+            # TO DRAW WAYPOINTS
+            for w in self.route_waypoints:
+                self.world.debug.draw_string(w.transform.location, 'O', draw_shadow=False,
+                                            color=carla.Color(r=0, g=0, b=255), life_time=120.0,
+                                            persistent_lines=True)
+                
+            for i, waypoint in enumerate(self.route_waypoints[:5]):  # Just as an example, adjust the range as needed
+                print(f"Waypoint {i}: Location = {waypoint.transform.location}")
+            
+            # for i, waypoint in enumerate(self.route_waypoints):
+            #     next_waypoints = waypoint.next(5.0)  # This gets the next waypoints within 5 meters
+            #     print(f"Waypoint {i} has {len(next_waypoints)} next waypoints.")
+
+            # # Save graph of plotted points as route.png
+            # x_graph = [p.transform.location.x for p in self.route_waypoints]
+            # y_graph = [p.transform.location.y for p in self.route_waypoints]
+            # plt.clf()  # Clear the figure to ensure no old data is plotted
+            # plt.plot(x_graph, y_graph, marker = 'o')
+            # # plt.savefig(f"route_ep_{ep}.png")
+            # plt.savefig(f"route_ep_{ep}.jpg", quality = 45) # MAX qulaity = 95
 
             returned_data = sync_mode.tick(timeout=2.0)
             # Assuming the first item in returned_data is the snapshot
@@ -191,200 +247,42 @@ class SimEnv(object):
                 print("No data, skipping episode")
                 self.reset()
                 return None
-            
-            # Generate route
-            self.route_waypoints = []
-            self.current_waypoint_index = 0
-            self.total_distance = 780 # depending on the town
-
-            # Get the initial waypoint based on the vehicle's current location
-            current_waypoint = self.world.get_map().get_waypoint(self.vehicle.get_location(), 
-                                                        project_to_road=True, lane_type=carla.LaneType.Driving)
-            self.route_waypoints.append(current_waypoint)
-
-            for x in range(self.total_distance):
-                if x < 650:
-                    next_waypoint = current_waypoint.next(5.0)[0]
-                else:
-                    next_waypoint = current_waypoint.next(5.0)[-1]
-
-                self.route_waypoints.append(next_waypoint)
-                current_waypoint = next_waypoint
 
 
             try:
-                # Image processing removed as it's not needed
-                #image = process_img(image_rgb)
-                #next_state = image 
-                initial_observations = np.array([*self.euclidean_dist_list, *self.dev_angle_array,
-                                                self.velocity, self.velocity_x, self.velocity_y,self.velocity_z,
-                                                self.engine_rpm, self.distance_from_center, self.angle])
-                next_state = initial_observations
 
-                # # TO DRAW WAYPOINTS
-                # for w in self.route_waypoints:
-                #     self.world.debug.draw_string(w.transform.location, 'O', draw_shadow=False,
-                #                                 color=carla.Color(r=0, g=0, b=255), life_time=120.0,
-                #                                 persistent_lines=True)
+                # Capture the initial state
+                next_state = self.capture_states()
 
-                while True:
+                if next_state is None:
+                    print("Preparing for a new episode...")
+                    self.reset()  # Clean up and log the end of the episode, if needed
+                    return None  # Break out of the loop to finish the current episode
+
+                while True: # simulation loop
                     if self.visuals: # Check the visuals and maintain a consistent frame rate
                         if should_quit(): # utils.py, checks pygame for quit events
                             return
                         self.clock.tick_busy_loop(30) # does not advance the simulation, only controls the fps rate
 
-                    #vehicle_location = self.vehicle.get_location()
-                    # Location of the car
-                    self.location = self.vehicle.get_location()
-
-                    waypoint = self.world.get_map().get_waypoint(self.location, project_to_road=True, 
-                       lane_type=carla.LaneType.Driving)
-                    
-                    
-                    #speed = get_speed(self.vehicle)
-
-                    # Get the new states
-                    # Retrieve the velocity of the vehicle
-                    # and calculate it in km/h
-                    velocity = self.vehicle.get_velocity() # Return: carla.Vector3D - m/s
-                    self.velocity_x = velocity.x * 3.6
-                    self.velocity_y = velocity.y * 3.6
-                    self.velocity_z = velocity.z * 3.6
-                    self.velocity = np.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2) * 3.6
-
-                    # Estimate the engine_rpm
-                    self.engine_rpm = self.estimate_engine_rpm()
-
-                    # Estimate the wheel_rpm
-                    self.wheel_rpm = self.estimate_wheel_rpm(velocity)
-                    
-                    
-                    # Rotation of the vehicle in correlation to the map/lane
-                    # get_transform(self): Returns the actor's transform (location and rotation)
-                    # the client received during last tick. The method does not call the simulator
-                    # rotation (carla.Rotation - degrees (pitch, yaw, roll))
-                    #self.rotation = self.vehicle.get_transform().rotation.yaw 
-
-                    # Get the current yaw from the vehicle's transform
-                    current_yaw = self.vehicle.get_transform().rotation.yaw
-
-                    # Calculate current yaw rate and yaw acceleration
-                    current_yaw_rate = self.calculate_yaw_rate(current_yaw)
-                    yaw_acceleration = self.calculate_yaw_acceleration(current_yaw_rate)
-
-                    #transform = self.vehicle.get_transform()
-                    # Keep track of closest waypoint on the route
-                    waypoint_index = self.current_waypoint_index
-
-                    # The purpose of this for loop is to determine 
-                    # if a vehicle has passed the next waypoint along a predefined route
-                    for _ in range(len(self.route_waypoints)):
-                        # Check if we passed the next waypoint along the route
-                        next_waypoint_index = waypoint_index + 1
-                        wp = self.route_waypoints[next_waypoint_index % len(self.route_waypoints)]
-
-                        # Computes the dot product between the 2D projection 
-                        # of the forward vector of the waypoint (wp.transform.get_forward_vector())
-                        # and the vector from the current vehicle location to the waypoint (self.location - wp.transform.location):
-                        # positive dot product -> the vectors are pointing at the same direction
-                        dot = np.dot(self.vector(wp.transform.get_forward_vector())[:2],self.vector(self.location - wp.transform.location)[:2])
-                        
-                        # If the dot product is positive, 
-                        # it means the vehicle has passed the next waypoint along the route
-                        # else, it breaks out of the loop, 
-                        # indicating that the current waypoint has not been passed yet:
-                        if dot > 0.0:
-                            waypoint_index += 1
-                        else:
-                            break
-                    
-                    # waypoint_index: the calculated waypoint index, 
-                    # which represents the closest waypoint that the vehicle has passed along the planned route
-                    self.current_waypoint_index = waypoint_index
-                    # Calculate deviation from center of the lane
-                    # % isto ensure that we remain within the limits of the route points
-                    self.current_waypoint = self.route_waypoints[ self.current_waypoint_index    % len(self.route_waypoints)]
-                    self.next_waypoint = self.route_waypoints[(self.current_waypoint_index+1) % len(self.route_waypoints)]
-                    
-                    # CALCULATE d (distance_from_center) and Theta (angle)
-                    # The result is the distance of the vehicle from the center of the lane:
-                    self.distance_from_center = self.distance_to_line(self.vector(self.current_waypoint.transform.location),self.vector(self.next_waypoint.transform.location),self.vector(self.location))
-                    # Get angle difference between closest waypoint and vehicle forward vector
-                    fwd    = self.vector(self.vehicle.get_velocity())
-                    wp_fwd = self.vector(self.current_waypoint.transform.rotation.get_forward_vector()) # Return: carla.Vector3D
-                    self.angle  = self.angle_diff(fwd, wp_fwd)
-                    
-                    # Calculate calculate_euc_dist
-                    self.euclidean_dist_list = self.calculate_euc_dist(self.current_waypoint_index)
-
-                    # Calculate dev_angle_list
-                    self.dev_angle_array = self.calculate_deviation_angle_tan(self.current_waypoint_index)
+                    # Advance simulation
+                    state = next_state
+                    counter +=1
+                    self.global_t +=1
 
 
-
-                    # # Print states:
-                    # print(f"Velocity (x): {self.velocity_x:.2f} km/h")
-                    # print(f"Velocity (y): {self.velocity_y:.2f} km/h")
-                    # print(f"Velocity (z): {self.velocity_z:.2f} km/h")
-                    # print(f"Total Velocity: {self.velocity:.2f} km/h")
-                    # print(f"Estimated Engine RPM: {self.engine_rpm:.2f} rpm")
-                    # print(f"Distance to line: {self.distance_from_center:.2f} unit")
-                    # # Assuming self.euclidean_dist_list is a list of numbers
-                    # formatted_dist_list = [f"{dist:.2f}" for dist in self.euclidean_dist_list]
-                    # formatted_dist_str = ", ".join(formatted_dist_list)
-                    # print(f"Euclidean Distance list: {formatted_dist_str} unit")
-                    # # Assuming self.dev_angle_array is a list of numbers
-                    # formatted_dev_angle_array = [f"{dist:.2f}" for dist in self.dev_angle_array]
-                    # formatted_dev_angle_str = ", ".join(formatted_dev_angle_array)
-                    # print(f"Deviation Angle list: {formatted_dev_angle_str} unit")
-                    # print(f"Angle Diff: {self.angle:.2f} unit")
-
-                    # print("Length of euclidean_dist_array:", len(self.euclidean_dist_list))
-                    # print("Length of dev_angle_array:", len(self.dev_angle_array))
-
-                    # Logging 
-                    self.logger.info(f"Episode: {ep}, Distance from Center: {self.distance_from_center}, Angle Deviation: {self.angle}")
-                    self.writer.add_scalar('Performance/Distance from Center', self.distance_from_center, ep)
-                    self.writer.add_scalar('Performance/Angle Deviation', self.angle, ep)
-
-
-                    new_observations = np.array([*self.euclidean_dist_list, *self.dev_angle_array,
-                                     self.velocity, self.velocity_x, self.velocity_y, self.velocity_z,
-                                     self.engine_rpm, self.distance_from_center, self.angle])
-                    
-                    
-                    # print("Total state length:", len(new_observations))
-                    
-                    # Advance the simulation and wait for the data.
-                    state = new_observations
-
-                    counter += 1
-                    self.global_t += 1
-
-
-                    # # action = model.select_action(state, eval=eval)
+                    # Apply model to get steering angle
                     action = self.agent.choose_action(state)
                     steer_nd = action
                     steer = steer_nd.item()
-
-                    # print("steer_nd:", steer_nd)
-                    # print("steer_nd type:", type(steer_nd))
-                    # print("steer:", steer)
-                    # print("steer type:", type(steer))
 
                     control = self.speed_controller.run_step(self.target_speed)
                     control.steer = steer
                     self.vehicle.apply_control(control)
 
-                    # print("snapshot:", snapshot)
-                    # print("snapshot type:", type(snapshot))
-
                     fps = round(1.0 / snapshot.timestamp.delta_seconds)
 
                     # NEXT TICK
-                    #snapshot, image_rgb, image_rgb_vis, collision = sync_mode.tick(timeout=2.0)
-                    #snapshot, collision = sync_mode.tick(timeout=2.0)
-
                     returned_data = sync_mode.tick(timeout=2.0)
                     # Assuming the first item in returned_data is the snapshot
                     snapshot = returned_data[0]
@@ -393,12 +291,27 @@ class SimEnv(object):
                     # Retrieving image_rgb_vis, which should be the second-to-last item
                     image_rgb_vis = returned_data[-2]
 
+                    # Capture the next state
+                    next_state = self.capture_states()
+                    
+                    if next_state is None:
+                        print("Preparing for a new episode...")
+                        self.reset()  # Clean up and log the end of the episode, if needed
+                        return None  # Break out of the loop to finish the current episode
+                    
+                    velocity = self.vehicle.get_velocity()
+
+                    # Print the closest waypoint index
+                    print("Episode waypoint index:", self.closest_waypoint_index)
+
                     # OLD REWARD CALL
-                    cos_yaw_diff, dist, collision = get_reward_comp(self.vehicle, waypoint, collision)
+                    cos_yaw_diff, dist, collision = get_reward_comp(self.vehicle, 
+                                                    self.route_waypoints[self.closest_waypoint_index], collision)
                     # reward = reward_value(cos_yaw_diff, dist, collision)
 
                     # UPDATED REWARD
                     # reward = calculate_reward_1(self.angle, self.distance_from_center, self.velocity, yaw_acceleration)
+                    
                     reward = calculate_reward_A2(velocity.x, steer, collision, self.angle)
 
                     #if snapshot is None or image_rgb is None:
@@ -406,17 +319,18 @@ class SimEnv(object):
                         print("Process ended here")
                         break
 
-                    #image = process_img(image_rgb)
 
                     done = 1 if collision else 0
 
+                    episode_reward += reward
                     self.total_rewards += reward
 
-                    next_state = state
-
                     # Logging state before normalization
-                    self.logger.info(f"Pre-Norm State: {state}")
-                    self.csv_writer.writerow([time.time(), ep, *state, steer, reward, self.total_rewards])
+                    # self.logger.info(f"Pre-Norm State: {state}")
+                    self.csv_writer.writerow([time.time(), ep, self.closest_waypoint_index,
+                                            *state, steer, reward, episode_reward, self.total_rewards])
+                    self.csv_writer_norm.writerow([time.time(), ep, self.closest_waypoint_index,
+                                            *next_state, steer, reward, episode_reward, self.total_rewards])
 
                     ###################
                     # Normalization logic
@@ -431,13 +345,13 @@ class SimEnv(object):
                             self.scaler_fitted = True # to ensure the one-time fitting of the scaler
 
                     # Check if the scaler is fitted, then normalize the state
-                    if self.scaler_fitted:
-                        state = self.normalize_state(state)
-                        self.logger.info(f"Post-Norm State: {state}")
-                        # self.csv_writer_norm.writerow([time.time(), ep, *self.euclidean_dist_list, *self.dev_angle_array,
-                        #   self.velocity, self.velocity_x, self.velocity_y, self.velocity_z,
-                        #   self.engine_rpm, self.distance_from_center, self.angle])
-                        self.csv_writer_norm.writerow([time.time(), ep, *state, steer, reward, self.total_rewards])
+                    # if self.scaler_fitted:
+                    #     state = self.normalize_state(state)
+                    #     self.logger.info(f"Post-Norm State: {state}")
+                    #     # self.csv_writer_norm.writerow([time.time(), ep, *self.euclidean_dist_list, *self.dev_angle_array,
+                    #     #   self.velocity, self.velocity_x, self.velocity_y, self.velocity_z,
+                    #     #   self.engine_rpm, self.distance_from_center, self.angle])
+                    #     self.csv_writer_norm.writerow([time.time(), ep, *state, steer, reward, self.total_rewards])
 
 
 
@@ -463,9 +377,20 @@ class SimEnv(object):
                             (8, 28))
                         pygame.display.flip()
 
-                    if collision == 1 or counter >= self.max_iter or dist > self.max_dist_from_waypoint:
-                        print("Episode {} processed".format(ep), counter)
+                    # if collision == 1 or counter >= self.max_iter or dist > self.max_dist_from_waypoint:
+                    #     print("Episode {} processed".format(ep), counter)
+                    #     break
+                    
+                    if collision == 1:
+                        print(f"Episode {ep} ended due to a collision after {counter} iterations.")
                         break
+                    elif counter >= self.max_iter:
+                        print(f"Episode {ep} reached the maximum iteration limit of {self.max_iter}.")
+                        break
+                    elif dist > self.max_dist_from_waypoint:
+                        print(f"Episode {ep} ended because the vehicle was more than {self.max_dist_from_waypoint} meters from the closest waypoint.")
+                        break
+
                 
                 if ep % self.save_freq == 0 and ep > 0:
                     self.save(ep)
@@ -562,25 +487,28 @@ class SimEnv(object):
     # Calculating Euclidean Distance List            |
     # -------------------------------------------------
 
-    def calculate_euc_dist(self, current_waypoint):
+    def calculate_euc_dist(self, current_waypoint_index):
+        ##########################################################
+        # This version raises an error and stops the simulation when there are not enought waypoints
+        ##########################################################
         # Define the number of closest waypoints to retrieve
         num_closest_waypoints = 10  # You can adjust this as needed
 
         # Ensure there are at least 10 waypoints available
-        if len(self.route_waypoints) - current_waypoint < num_closest_waypoints:
+        if len(self.route_waypoints) - current_waypoint_index < num_closest_waypoints:
             raise ValueError("Not enough waypoints available for calculation.")
         
         # Calculate the end index for slicing the route_waypoints list
-        end_index = current_waypoint + num_closest_waypoints + 1
+        end_index = current_waypoint_index + num_closest_waypoints + 1
 
         # Retrieve the next 10 waypoints from the current waypoint
-        closest_waypoints = self.route_waypoints[current_waypoint + 1:min(end_index, len(self.route_waypoints))]
+        closest_waypoints = self.route_waypoints[current_waypoint_index + 1:min(end_index, len(self.route_waypoints))]
 
         # Calculate the Euclidean distance to each waypoint
         euclidean_dist_list = []
-        current_waypoint_vector = np.array([self.route_waypoints[current_waypoint].transform.location.x, 
-                                        self.route_waypoints[current_waypoint].transform.location.y, 
-                                        self.route_waypoints[current_waypoint].transform.location.z])
+        current_waypoint_vector = np.array([self.route_waypoints[current_waypoint_index].transform.location.x, 
+                                        self.route_waypoints[current_waypoint_index].transform.location.y, 
+                                        self.route_waypoints[current_waypoint_index].transform.location.z])
         
         for waypoint in closest_waypoints:
             # Extract the coordinates from the waypoint object and convert them into a NumPy array
@@ -601,22 +529,25 @@ class SimEnv(object):
         elif isinstance(v, carla.Rotation):
             return np.array([v.pitch, v.yaw, v.roll])
         
-    def calculate_deviation_angle_tan(self, current_waypoint):
+    def calculate_deviation_angle_tan(self, current_waypoint_index):
+        ##########################################################
+        # This version raises an error and stops the simulation when there are not enought waypoints
+        ##########################################################
         # Define the number of closest waypoints to retrieve
         num_closest_waypoints = 10  # You can adjust this as needed
 
         # Ensure there are at least 10 waypoints available
-        if len(self.route_waypoints) - current_waypoint < num_closest_waypoints:
+        if len(self.route_waypoints) - current_waypoint_index < num_closest_waypoints:
             raise ValueError("Not enough waypoints available for calculation.")
         
         # Calculate the end index for slicing the route_waypoints list
-        end_index = current_waypoint + num_closest_waypoints + 1
+        end_index = current_waypoint_index + num_closest_waypoints + 1
 
         # Get the forward vector of the vehicle
         vehicle_forward_vector = self.vector(self.vehicle.get_transform().rotation.get_forward_vector())[:2]
 
         # Get the positions of the nearest 10 waypoints
-        nearest_waypoints = self.route_waypoints[current_waypoint + 1:min(end_index, len(self.route_waypoints))]
+        nearest_waypoints = self.route_waypoints[current_waypoint_index + 1:min(end_index, len(self.route_waypoints))]
 
         deviation_angles = []
 
@@ -679,6 +610,263 @@ class SimEnv(object):
         """Normalize the state using the fitted scaler."""
         state = np.array(state).reshape(1, -1)
         return self.scaler.transform(state)[0]
+    
+    #######################################################
+    # Capture States
+    #######################################################
+    def capture_states(self):
+
+        # Location of the car
+        self.location = self.vehicle.get_location()
+        #waypoint = self.world.get_map().get_waypoint(self.location, project_to_road=True, 
+        #    lane_type=carla.LaneType.Driving)
+
+        # Determine the current waypoint index
+        # closest_waypoint_index = self.determine_current_waypoint_index()
+        next_wp, next_next_wp, next_wp_index, next_next_wp_index = self.get_next_two_waypoints_and_indices()
+
+        # CHECK if next_wp or next_next_wp is None, terminate episode
+        if next_wp is None or next_next_wp is None:
+            print("Next waypoint(s) not found. Ending episode.")
+            self.reset()  # Gracefully end the episode and prepare for a new one
+            return
+
+        self.closest_waypoint_index = next_wp_index
+
+        # Print waypoints and thier indices:
+        if next_wp is not None:
+            print(f"Next waypoint index: {next_wp_index}, Location: {next_wp.transform.location}")
+        else:
+            print("Next waypoint not found.")
+
+        if next_next_wp is not None:
+            print(f"Next next waypoint index: {next_next_wp_index}, Location: {next_next_wp.transform.location}")
+        else:
+            print("Next next waypoint not found.")
+
+        # Draw next waypoint
+        # self.world.debug.draw_point(next_wp.transform.location, life_time=5)
+
+        
+        # Retrieve vehicle's current location and velocity
+        velocity = self.vehicle.get_velocity()
+        self.velocity_x = velocity.x * 3.6
+        self.velocity_y = velocity.y * 3.6
+        self.velocity_z = velocity.z * 3.6
+        self.velocity = np.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2) * 3.6
+
+        # Estimate engine and wheel RPM
+        self.engine_rpm = self.estimate_engine_rpm()
+        self.wheel_rpm = self.estimate_wheel_rpm(velocity)
+
+        # Retrieve current yaw and calculate yaw rate and acceleration
+        current_yaw = self.vehicle.get_transform().rotation.yaw
+        current_yaw_rate = self.calculate_yaw_rate(current_yaw)
+        yaw_acceleration = self.calculate_yaw_acceleration(current_yaw_rate)
+
+        # self.closest_waypoint_index = closest_waypoint_index
+        # current_waypoint = self.route_waypoints[closest_waypoint_index]
+        # next_waypoint = self.route_waypoints[closest_waypoint_index + 1]
+
+        # CALCULATE d (distance_from_center) and Theta (angle)
+        # The result is the distance of the vehicle from the center of the lane:
+        self.distance_from_center = self.distance_to_line(self.vector(next_wp.transform.location),
+                                                          self.vector(next_next_wp.transform.location),
+                                                          self.vector(self.location))
+        # Get angle difference between closest waypoint and vehicle forward vector
+        fwd    = self.vector(self.vehicle.get_velocity())
+        wp_fwd = self.vector(next_wp.transform.rotation.get_forward_vector()) # Return: carla.Vector3D
+        self.angle  = self.angle_diff(fwd, wp_fwd)
+
+        # Update Euclidean distances and deviation angles lists
+        self.euclidean_dist_list = self.calculate_euc_dist(next_wp_index)
+        self.dev_angle_array = self.calculate_deviation_angle_tan(next_wp_index)
+
+        # Package the state information
+        state = np.array([*self.euclidean_dist_list, *self.dev_angle_array,
+                        self.velocity, self.velocity_x, self.velocity_y, self.velocity_z,
+                        self.engine_rpm, self.distance_from_center, self.angle])
+
+        return state
+    
+    
+    #######################################################
+    # Generate Route
+    #######################################################
+    
+    def generate_route(self, total_distance=780):
+        """
+        Generates a route based on the vehicle's current location and a specified total distance.
+
+        Args:
+        - total_distance: The total distance of the route to generate.
+        """
+        # Initialize the route waypoints list and current waypoint index
+        self.route_waypoints = []
+        self.current_waypoint_index = 0
+        self.total_distance = total_distance  # You can set this depending on the town
+
+        # Get the initial waypoint based on the vehicle's current location
+        current_waypoint = self.world.get_map().get_waypoint(self.vehicle.get_location(),
+                                                             project_to_road=True,
+                                                             lane_type=carla.LaneType.Driving)
+        self.route_waypoints.append(current_waypoint)
+
+        # Generate the rest of the waypoints for the route
+        for x in range(self.total_distance):
+            # Depending on the section of the route, select the appropriate next waypoint
+            if x < 650:
+                next_waypoint = current_waypoint.next(10.0)[0]
+            else:
+                next_waypoint = current_waypoint.next(10.0)[-1]
+
+            self.route_waypoints.append(next_waypoint)
+            current_waypoint = next_waypoint
+
+
+    #######################################################
+    # Generate Route - source: https://medium.com/@chardorn/creating-carla-waypoints-9d2cc5c6a656
+    #######################################################
+    
+    def generate_route_2(self):
+        """
+        Generates waypoints based on the vehicle's lane 
+
+        Positive lane_id values represent lanes to the right of the centerline of the road 
+        (when facing in the direction of increasing waypoint s-values, 
+        which usually corresponds to the driving direction).
+        
+        Negative lane_id values represent lanes to the left of the centerline of the road.
+        
+        The magnitude of the lane_id increases as you move further from the road's centerline,
+        meaning lane_id = 1 or lane_id = -1 indicates the lane immediately adjacent to the centerline of the road.
+        """
+        # Initialize route_waypoints list
+        self.route_waypoints = []
+
+        waypoint_list = self.world.get_map().generate_waypoints(5.0)
+        print("Length: " + str(len(waypoint_list)))
+
+        # Determine the vehicle's lane
+        vehicle_location = self.vehicle.get_location()
+
+        # Get the waypoint corresponding to the vehicle's location
+        waypoint = self.world.get_map().get_waypoint(vehicle_location)
+
+        # Retrieve the lane ID
+        target_lane = waypoint.lane_id
+
+        # Retrieve the waypoints from that lane and make them the vehicle's route
+        for i in range(len(waypoint_list) - 1):
+            if waypoint_list[i].lane_id == target_lane:
+                self.route_waypoints.append(waypoint_list[i])
+
+    
+    #######################################################
+    # Determine the current waypoint index
+    #######################################################
+    
+    def determine_current_waypoint_index(self):
+        closest_waypoint_index = None
+        max_dot_product = -float('inf')  # Initialize with very small number
+        vehicle_location = self.vehicle.get_location()
+        vehicle_forward_vector = self.vehicle.get_transform().get_forward_vector()
+        
+        for i, waypoint in enumerate(self.route_waypoints):
+            waypoint_vector = waypoint.transform.location - vehicle_location
+            dot_product = vehicle_forward_vector.dot(waypoint_vector)
+            
+            if dot_product > max_dot_product:
+                max_dot_product = dot_product
+                closest_waypoint_index = i
+                
+        return closest_waypoint_index
+    
+    #######################################################
+    # Get next waypoint
+    #######################################################
+    
+    def get_next_waypoint(self):
+        vehicle_location = self.vehicle.get_location()
+        min_distance = 1000
+        next_waypoint = None
+
+        for waypoint in self.route_waypoints:
+            waypoint_location = waypoint.transform.location
+
+            # Only check waypoints that are in the front of the vehicle 
+            # (if x is negative, then the waypoint is to the rear)
+            #TODO: Check if this applies for all maps
+            if (waypoint_location - vehicle_location).x > 0:
+
+                # Find the waypoint closest to the vehicle, 
+                # but once vehicle is close to upcoming waypoint, search for next one
+                if vehicle_location.distance(waypoint_location) < min_distance and vehicle_location.distance(waypoint_location) > 5:
+                    min_distance = vehicle_location.distance(waypoint_location)
+                    next_waypoint = waypoint
+
+        return next_waypoint
+    
+    #######################################################
+    # Get next two waypoints and their indices
+    #######################################################
+    
+    def get_next_two_waypoints_and_indices(self):
+        vehicle_location = self.vehicle.get_location()
+        min_distance = 1000
+        next_waypoint = None
+        next_next_waypoint = None
+        index_of_next_waypoint = None
+        index_of_next_next_waypoint = None
+
+        if len(self.route_waypoints) > 0:
+            print(f"First waypoint location: {self.route_waypoints[0].transform.location}")
+            print(f"Last waypoint location: {self.route_waypoints[-1].transform.location}")
+
+        print(f"Current vehicle location: {vehicle_location}")
+
+        # Find the closest waypoint ahead of the vehicle
+        for index, waypoint in enumerate(self.route_waypoints):
+            waypoint_location = waypoint.transform.location
+
+            # Assuming the vehicle's forward direction corresponds with increasing waypoint index
+            distance = vehicle_location.distance(waypoint_location)
+            if distance < min_distance and (waypoint_location - vehicle_location).x > 0:
+                min_distance = distance
+                next_waypoint = waypoint
+                index_of_next_waypoint = index
+
+        # If a closest waypoint is found, attempt to get the next waypoint in the list
+        if next_waypoint is not None and index_of_next_waypoint is not None:
+            try:
+                next_next_waypoint = self.route_waypoints[index_of_next_waypoint + 1]
+                index_of_next_next_waypoint = index_of_next_waypoint + 1
+            except IndexError:
+                next_next_waypoint = None  # This might happen if the next waypoint is the last one
+                index_of_next_next_waypoint = None
+
+        return next_waypoint, next_next_waypoint, index_of_next_waypoint, index_of_next_next_waypoint
+    
+    def generate_custom_spawn_points(self, distance=5.0):
+        map = self.world.get_map()
+        # Generate waypoints across the map at specified intervals
+        waypoints = map.generate_waypoints(distance)
+        custom_spawn_points = []
+
+        for waypoint in waypoints:
+            # Optionally filter waypoints; for example, ensure they are in driving lanes
+            if waypoint.lane_type == carla.LaneType.Driving:
+                # Create a Transform with the waypoint's location and rotation
+                location = waypoint.transform.location
+                # Adjust Z location to ensure the vehicle spawns above the ground
+                location.z += 2
+                rotation = waypoint.transform.rotation
+                spawn_transform = carla.Transform(location, rotation)
+
+                custom_spawn_points.append(spawn_transform)
+
+        return custom_spawn_points
+
 
 ####################################################### End of SimEnv
 
@@ -784,13 +972,13 @@ def initialize_csv_writer(csv_file_path):
     csv_writer = csv.writer(csv_file)
     # Write CSV header
     csv_writer.writerow([
-    'Time', 'Episode',
+    'Time', 'Episode', 'ClosestWaypointIndex'
     'EuclideanDist1', 'EuclideanDist2', 'EuclideanDist3', 'EuclideanDist4', 'EuclideanDist5',
     'EuclideanDist6', 'EuclideanDist7', 'EuclideanDist8', 'EuclideanDist9', 'EuclideanDist10',
     'DeviationAngle1', 'DeviationAngle2', 'DeviationAngle3', 'DeviationAngle4', 'DeviationAngle5',
     'DeviationAngle6', 'DeviationAngle7', 'DeviationAngle8', 'DeviationAngle9', 'DeviationAngle10',
     'Velocity', 'VelocityX', 'VelocityY', 'VelocityZ',
-    'EngineRPM', 'DistanceFromCenter', 'Angle', 'SteeringCommand', 'Reward', 'TotalReward'
+    'EngineRPM', 'DistanceFromCenter', 'Angle', 'SteeringCommand', 'Reward', 'EpisodeReward', 'TotalReward'
     ])
     return csv_writer, csv_file
 
